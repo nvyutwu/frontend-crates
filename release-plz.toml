@@ -1,0 +1,100 @@
+# release-plz configuration. See https://release-plz.dev/docs/config
+
+[workspace]
+# Validate proposed bumps against the public API diff via cargo-semver-checks.
+# If a `fix:` or `chore:` commit actually removed/renamed a pub item, the
+# release fails before anything is published.
+semver_check = true
+
+# Only commits matching this regex count toward "is there anything to release".
+# TEMPORARY (transition only): `chore` is included so `chore: trivial parser
+# sync from dynamo` commits — how parser updates land during the
+# dynamo -> frontend-crates migration — actually trigger a version bump and
+# publish. Without it those syncs propose no bump, so the workflow's publish
+# step (gated on `bumped == 'true'`) is skipped and the synced fixes never
+# reach crates.io. REMOVE `chore` after the transition completes; it also lets
+# unrelated chore: commits (incl. dependabot `chore(deps):`) drive releases.
+release_commits = "^(feat|fix|perf|refactor|sync|chore)(\\(.+\\))?!?:"
+
+# Default tag format: per-crate, e.g. dynamo-protocols-v0.1.1
+git_tag_enable = true
+git_tag_name = "{{ package }}-v{{ version }}"
+
+# Do NOT create GitHub Releases (git tags + CHANGELOG only).
+git_release_enable = false
+
+# Defaults we accept explicitly for clarity:
+# changelog_update = true
+# publish = true
+
+# Non-published workspace crates must opt out of release-plz publishing too;
+# release-plz validates this against each crate's Cargo.toml.
+[[package]]
+name = "dynamo-conformance-fixtures-v2"
+publish = false
+release = false
+
+# `dynamo-demo-server` is `publish = false` in its Cargo.toml; mirror BOTH
+# `publish = false` and `release = false` here. release-plz fails the whole
+# `release` run if its config's publish flag (default true) disagrees with the
+# package's `publish = false` in Cargo.toml, so `release = false` alone is not
+# enough — the publish flag must match too.
+[[package]]
+name = "dynamo-demo-server"
+publish = false
+release = false
+
+# `dynamo-parsers-v2-py` is the PyO3/maturin binding used only by the conformance
+# harness. It is a cdylib (a Python extension module, useless as a crates.io
+# dependency) with no consumer outside this repo, and no PyPI publish job exists.
+# It was being published to crates.io only because it lacked an opt-out. Mirror
+# BOTH flags to match its Cargo.toml `publish = false` (see the demo-server note).
+[[package]]
+name = "dynamo-parsers-v2-py"
+publish = false
+release = false
+
+[changelog]
+header = """# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+"""
+
+body = """
+## [{{ version | trim_start_matches(pat="v") }}]\
+    {%- if release_link -%}\
+        ({{ release_link }})\
+    {% endif %} \
+    - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+    {% if commit.breaking %}[**breaking**] {% endif %}\
+    {{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+
+# Group commits in changelogs. Skipped categories don't render at all (so
+# CI/test/build noise stays out of the user-facing changelog).
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug fixes" },
+    { message = "^perf", group = "Performance" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^doc", group = "Documentation" },
+    { message = "^sync", group = "Upstream sync" },
+    # TEMPORARY (transition): render `chore` in the changelog instead of
+    # skipping it, since `chore` now triggers releases (see `release_commits`
+    # above) — a chore-driven release would otherwise have an empty changelog.
+    # Remove together with the `release_commits` chore entry after the
+    # dynamo -> frontend-crates transition.
+    { message = "^chore", group = "Miscellaneous" },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+    { message = "^test", skip = true },
+]

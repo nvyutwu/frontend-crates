@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "dynamo-tokenizers"
+readme = "README.md"
+version = "1.5.3"
+edition.workspace = true
+description = "Standalone tokenizer implementations (HuggingFace, tiktoken, FastTokenizers) for LLM inference serving."
+authors.workspace = true
+license = "Apache-2.0"
+homepage.workspace = true
+repository.workspace = true
+keywords = ["llm", "tokenizer", "huggingface", "tiktoken", "inference"]
+include = ["src/**/*", "Cargo.toml", "README.md"]
+
+[dependencies]
+aho-corasick.workspace = true
+anyhow.workspace = true
+blake3.workspace = true
+moka = { workspace = true, features = ["sync"] }
+fastokens.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+strum = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+
+base64.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+tiktoken-rs.workspace = true
+tokenizers = { workspace = true, features = [
+  "onig",
+  "esaxx_fast",
+  "rustls-tls",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,160 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Scope OIDC + secrets to a protected environment. crates.io trusted
+    # publishing entries should reference this environment so the OIDC
+    # claim is bound to it — a misconfigured workflow elsewhere can't
+    # publish even if it lands on main.
+    environment: automated-release
+    permissions:
+      contents: write       # push the release commit + tags
+      pull-requests: write  # release-plz may interact with PRs
+      id-token: write       # OIDC for crates.io trusted publishing
+    # Recursion guard: skip the run triggered by our own "chore: release" push.
+    # workflow_dispatch bypasses the guard so a partial publish can be re-run.
+    if: "${{ github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore: release') }}"
+    steps:
+      - name: Generate release app token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          token: ${{ steps.release-token.outputs.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "release-plz[bot]"
+          git config user.email "release-plz[bot]@users.noreply.github.com"
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: Install release-plz CLI
+        run: |
+          curl -sSLf https://github.com/release-plz/release-plz/releases/download/release-plz-v0.3.158/release-plz-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /usr/local/bin release-plz
+          release-plz --version
+
+      - name: Install cargo-semver-checks
+        run: |
+          curl -sSLf https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v0.48.0/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /usr/local/bin
+          cargo-semver-checks --version
+
+      # Path-scoped auto-bump (DIS-2414). A blanket `release-plz update` cascades:
+      # a change to one crate re-releases its dependents even when their code
+      # didn't change (all inter-crate deps are caret reqs, so a compatible bump
+      # never requires re-releasing a dependent). That churned versions — e.g.
+      # dynamo-parsers-v2 went 0.1.17 -> 0.1.21 in days, and v1/v2 were bumped
+      # in lockstep despite sharing no code. Instead, run `release-plz update
+      # -p <crate>` only for crates whose OWN directory changed since their last
+      # release tag, and never touch a version a human already bumped:
+      #   - version != last release tag  -> manually PEGGED: leave it alone;
+      #     the publish step below ships exactly that version (same number the
+      #     HF fixture upload embeds — Cargo.toml is the single source of truth)
+      #   - version == last tag, no changes under the crate dir -> nothing
+      #   - version == last tag, changes under the crate dir -> auto-bump this
+      #     crate only (release-plz still sizes the bump from conventional
+      #     commits, writes the changelog, and runs cargo-semver-checks)
+      - name: Bump versions for crates whose own files changed
+        run: |
+          # `--allow-dirty` below is intentional: each package update leaves
+          # its version/changelog edits for the final combined release commit.
+          # Fail here so it cannot mask changes that predate this loop.
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            echo "Release checkout must start clean."
+            exit 1
+          fi
+
+          members=$(sed -n '/^members = \[/,/^]/p' Cargo.toml | grep -oE '"[^"]+"' | tr -d '"')
+          for dir in $members; do
+            grep -q '^publish *= *false' "$dir/Cargo.toml" && continue
+            name=$(grep -m1 '^name *=' "$dir/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')
+            ver=$(grep -m1 '^version *=' "$dir/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')
+            # Exact-match this crate's tags: the glob "dynamo-parsers-v*" would
+            # also match dynamo-parsers-v2-v0.1.21, so require <name>-v<semver>.
+            last=$(git tag -l "$name-v*" | grep -E "^$name-v[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -1)
+            if [ -z "$last" ]; then
+              echo "$name: no release tag yet -> first release is manual, skipping"
+            elif [ "$ver" != "${last#"$name"-v}" ]; then
+              echo "$name: $ver != last released ${last#"$name"-v} -> manually pegged"
+              # A manual peg bypasses release-plz update — the only path that
+              # runs cargo-semver-checks — so validate here that the pegged
+              # jump is big enough for the actual API diff vs the last release.
+              cargo semver-checks check-release --package "$name" --baseline-rev "$last"
+              echo "$name: peg passes semver-checks, publish as-is"
+            # The root Cargo.toml is part of every crate's change scope:
+            # workspace-inherited dependency versions and [workspace.package]
+            # metadata land in the published manifest of each member crate.
+            elif git diff --quiet "$last"..HEAD -- "$dir" Cargo.toml; then
+              echo "$name: no changes under $dir/ or the root Cargo.toml since $last"
+            else
+              echo "$name: changes under $dir/ (or root Cargo.toml) since $last -> auto-bump"
+              release-plz update --allow-dirty -p "$name"
+            fi
+          done
+
+      - name: Commit and push version bumps (if any)
+        run: |
+          if git diff --quiet; then
+            echo "No version bumps proposed."
+            exit 0
+          fi
+          # Informative subject listing every crate whose [package] version
+          # changed this run, e.g. "chore: release dynamo-protocols v1.4.0,
+          # dynamo-renderer v0.1.1". The name + literal version guard skips the
+          # workspace root. The "chore: release" prefix is mandatory — the
+          # recursion guard above keys off it.
+          git add -A
+          summary=$(for toml in $(git ls-files | grep -E '(^|/)Cargo\.toml$'); do
+            name=$(grep -m1 '^name *=' "$toml" | sed -E 's/.*"([^"]+)".*/\1/')
+            newver=$(grep -m1 '^version *=' "$toml" | sed -E 's/.*"([^"]+)".*/\1/')
+            oldver=$(git show "HEAD:$toml" 2>/dev/null | grep -m1 '^version *=' | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -n "$name" ] && [ -n "$newver" ] && [ "$newver" != "$oldver" ]; then
+              printf '%s v%s, ' "$name" "$newver"
+            fi
+          done | sed 's/, $//')
+          [ -z "$summary" ] && summary="version bumps"
+          git commit -s -m "chore: release $summary"
+          git push origin HEAD:main
+
+      # Always run (not gated on the bump step): a merge that only manually
+      # pegged a version produces no auto-bump commit but must still publish.
+      # `release-plz release` publishes whatever Cargo.toml versions aren't on
+      # crates.io yet and pushes their tags; it's a no-op otherwise.
+      - name: Publish to crates.io (trusted publishing)
+        # The release-plz binary needs the forge token passed explicitly via
+        # --git-token; unlike release-plz/action it does NOT read GITHUB_TOKEN
+        # from the env. Even with git_release_enable=false, `release` builds a
+        # forge client unconditionally, so a missing token aborts the publish.
+        # Reference the env var (not the ${{ }} expression) so the token value
+        # is never expanded into the echoed command.
+        run: release-plz release --git-token "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
+          # No CARGO_REGISTRY_TOKEN — trusted publishing via OIDC is used
+          # instead. release-plz exchanges the GitHub OIDC token for a
+          # short-lived crates.io token automatically.

@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Require review from ai-dynamo/devops for CI/CD, supply-chain config,
+# and changes to this CODEOWNERS file itself.
+/.github/        @ai-dynamo/devops
+CONTRIBUTING.md  @ai-dynamo/devops
+deny.toml        @ai-dynamo/devops
+LICENSE          @ai-dynamo/devops
+release-plz.toml @ai-dynamo/devops
+RELEASING.md     @ai-dynamo/devops
+SECURITY.md      @ai-dynamo/devops
+
+# Tool-calling / reasoning parser crates and their conformance tests.
+# parsers/ holds all three crates: v1 (dynamo-parsers), v2 (dynamo-parsers-v2),
+# and v2-py (dynamo-parsers-v2-py, test-only PyO3 binding).
+/parsers/       @ai-dynamo/contributors-frontend-crates
+/conformance/   @ai-dynamo/contributors-frontend-crates

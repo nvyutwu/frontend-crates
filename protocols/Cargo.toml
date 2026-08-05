@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Based on https://github.com/64bit/async-openai/ by Himanshu Neema
+# Original Copyright (c) 2022 Himanshu Neema
+# Licensed under MIT License (see ATTRIBUTIONS-Rust.md)
+#
+# Modifications Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
+# Licensed under Apache 2.0
+
+[package]
+name = "dynamo-protocols"
+readme = "README.md"
+version = "4.0.0"
+edition.workspace = true
+description = "Protocol types for OpenAI-compatible inference APIs with inference-serving extensions."
+authors.workspace = true
+license = "Apache-2.0 AND MIT"
+homepage.workspace = true
+repository.workspace = true
+keywords = ["llm", "genai", "inference", "openai", "anthropic"]
+include = ["src/**/*", "Cargo.toml", "README.md"]
+
+[dependencies]
+# Upstream OpenAI types (types-only, no HTTP client)
+async-openai = { workspace = true, features = [
+    "batch-types",
+    "chat-completion-types",
+    "response-types",
+    "completion-types",
+    "embedding-types",
+    "file-types",
+    "image-types",
+    "realtime-types",
+] }
+
+# Serialization
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+derive_builder.workspace = true
+
+# Type support
+thiserror.workspace = true
+tracing.workspace = true
+url = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+futures.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test.workspace = true
+serde_json.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

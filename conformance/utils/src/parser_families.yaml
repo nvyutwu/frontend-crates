@@ -1,0 +1,113 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Parser-family registry (audit B2): one row per conformance family with the
+# parser/detector name each engine uses. `null` = that engine has no parser for the
+# family (rendered unavailable). This is the single source of truth for the peer
+# capture maps in capture_driver.py (VLLM / VLLM_RUST / SGLANG) — adding a family or
+# changing a peer parser name happens here, not in three parallel dicts.
+#
+# Columns:
+#   vllm_python    vLLM Python tool-parser name        (None -> no vLLM capture)
+#   vllm_rust      vLLM Rust tool-parser name          (None -> no vLLM Rust capture)
+#   sglang_python  SGLang detector name                (None -> no SGLang detector)
+#   dynamo_v2      Dynamo parser v2 family id           (None -> not implemented yet)
+#   preferred_input  tokens | text  (how the Dynamo v2 parser is best driven)
+families:
+  deepseek_v3:    {vllm_python: deepseek_v3,    vllm_rust: deepseek_v3,  sglang_python: deepseekv3,  dynamo_v2: null,        preferred_input: text}
+  deepseek_v3_1:  {vllm_python: deepseek_v31,   vllm_rust: deepseek_v31, sglang_python: deepseekv31, dynamo_v2: null,        preferred_input: text}
+  deepseek_v3_2:  {vllm_python: deepseek_v32,   vllm_rust: deepseek_v32, sglang_python: deepseekv32, dynamo_v2: null,        preferred_input: text}
+  deepseek_v4:    {vllm_python: deepseek_v4,    vllm_rust: deepseek_v4,  sglang_python: deepseekv4,  dynamo_v2: deepseek_v4, preferred_input: text}
+  gemma4:         {vllm_python: gemma4,         vllm_rust: gemma4,       sglang_python: gemma4,      dynamo_v2: gemma4,      preferred_input: text}
+  glm47:          {vllm_python: glm47,          vllm_rust: glm47,        sglang_python: glm47,       dynamo_v2: glm47,       preferred_input: text}
+  hermes:         {vllm_python: hermes,         vllm_rust: hermes,       sglang_python: hermes,      dynamo_v2: null,        preferred_input: text}
+  jamba:          {vllm_python: jamba,          vllm_rust: null,         sglang_python: null,        dynamo_v2: null,        preferred_input: text}
+  kimi_k2:        {vllm_python: kimi_k2,        vllm_rust: kimi_k2,      sglang_python: kimi_k2,     dynamo_v2: kimi_k2,     preferred_input: text}
+  llama3_json:    {vllm_python: llama3_json,    vllm_rust: llama3_json,  sglang_python: llama3,      dynamo_v2: null,        preferred_input: text}
+  minimax_m2:     {vllm_python: minimax_m2,     vllm_rust: minimax_m2,   sglang_python: minimax-m2,  dynamo_v2: minimax_m2,  preferred_input: text}
+  minimax_m3:     {vllm_python: minimax_m3,     vllm_rust: null,         sglang_python: minimax-m3,  dynamo_v2: minimax_m3,  preferred_input: text}
+  mistral:        {vllm_python: mistral,        vllm_rust: mistral,      sglang_python: mistral,     dynamo_v2: null,        preferred_input: text}
+  nemotron_deci:  {vllm_python: hermes,         vllm_rust: hermes,       sglang_python: null,        dynamo_v2: null,        preferred_input: text}
+  nemotron_nano:  {vllm_python: hermes,         vllm_rust: hermes,       sglang_python: null,        dynamo_v2: null,        preferred_input: text}
+  phi4:           {vllm_python: phi4_mini_json, vllm_rust: null,         sglang_python: null,        dynamo_v2: null,        preferred_input: text}
+  pythonic:       {vllm_python: pythonic,       vllm_rust: null,         sglang_python: pythonic,    dynamo_v2: null,        preferred_input: text}
+  qwen25:         {vllm_python: hermes,         vllm_rust: hermes,       sglang_python: qwen25,      dynamo_v2: null,        preferred_input: text}
+  qwen3_coder:    {vllm_python: qwen3_coder,    vllm_rust: qwen3_coder,  sglang_python: qwen3_coder, dynamo_v2: qwen3_coder, preferred_input: text}
+  # Harmony (gpt-oss) is driven by the Dynamo token path and captured via the
+  # harmony-specific flow, not the peer maps above; listed for registry coverage.
+  harmony:        {vllm_python: null,           vllm_rust: null,         sglang_python: null,        dynamo_v2: harmony,      preferred_input: tokens}
+  harmony_text:   {vllm_python: null,           vllm_rust: null,         sglang_python: null,        dynamo_v2: harmony,      preferred_input: text}
+
+# Family grammar tokens (DIS-2442): the single source both derived registries consume.
+#   * markers.py builds the tool-call leak detector (_TOOL_CALL_MARKUP_RE) from the
+#     union of every family's tokens — an undeclared token makes a markup leak render
+#     as a clean green cell.
+#   * tests/parity/markup.py consults the family's pairs/singletons when its heuristic
+#     classifier cannot type a token — an unclassifiable token renders as a red
+#     tt-orphan in the conformance popups (looks like a parse error).
+# Keys per family (all optional, but the family key itself is REQUIRED — the coverage
+# lint fails families without an entry; use an explicit {} for markup-less grammars):
+#   pairs:      [[open, close], ...] exact-literal open/close token pairs
+#   singletons: [tok, ...]           standalone tokens with no open/close semantics
+#   leak:       [s, ...]             extra substrings for the leak detector only —
+#                                    prefixes of parameterized tags (e.g. "<invoke"),
+#                                    tokens the colorizer already handles specially
+markers:
+  deepseek_v3:
+    pairs: [["<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"], ["<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"]]
+    singletons: ["<｜tool▁sep｜>"]
+  deepseek_v3_1:
+    pairs: [["<｜tool▁calls▁begin｜>", "<｜tool▁calls▁end｜>"], ["<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"]]
+    singletons: ["<｜tool▁sep｜>"]
+  deepseek_v3_2:
+    pairs: [["<｜DSML｜function_calls>", "</｜DSML｜function_calls>"]]
+    leak: ["<｜DSML｜", "</｜DSML｜"]
+  deepseek_v4:
+    pairs: [["<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"]]
+    leak: ["<｜DSML｜", "</｜DSML｜"]
+  gemma4:
+    pairs: [["<|tool_call>", "<tool_call|>"]]
+    leak: ['<|"|>']
+  glm47:
+    pairs: [["<tool_call>", "</tool_call>"], ["<arg_key>", "</arg_key>"], ["<arg_value>", "</arg_value>"]]
+  hermes:
+    pairs: [["<tool_call>", "</tool_call>"]]
+  jamba:
+    pairs: [["<tool_calls>", "</tool_calls>"]]
+  kimi_k2:
+    pairs: [["<|tool_calls_section_begin|>", "<|tool_calls_section_end|>"], ["<|tool_call_begin|>", "<|tool_call_end|>"]]
+    singletons: ["<|tool_call_argument_begin|>"]
+  llama3_json:
+    singletons: ["<|python_tag|>"]
+  minimax_m2:
+    pairs: [["<minimax:tool_call>", "</minimax:tool_call>"]]
+    leak: ["<invoke", "</invoke", "<parameter", "</parameter"]
+  minimax_m3:
+    pairs: [["<tool_call>", "</tool_call>"]]
+    singletons: ["]<]minimax[>["]
+    leak: ["<invoke", "</invoke"]
+  mistral:
+    pairs: [["[TOOL_CALLS]", "[/TOOL_CALLS]"]]
+  nemotron_deci:
+    pairs: [["<TOOLCALL>", "</TOOLCALL>"]]
+  nemotron_nano:
+    pairs: [["<tool_call>", "</tool_call>"]]
+    leak: ["<function=", "</function", "<parameter=", "</parameter"]
+  phi4:
+    leak: ["functools["]
+  # Pythonic output is a bare `[func(...)]` python list — no grammar markup exists to
+  # leak or colorize; explicit empty declaration.
+  pythonic: {}
+  qwen25:
+    pairs: [["<tool_call>", "</tool_call>"]]
+  qwen3_coder:
+    pairs: [["<tool_call>", "</tool_call>"]]
+    leak: ["<function=", "</function", "<parameter=", "</parameter"]
+  # Harmony's linear turn tokens pseudo-pair (`<|start|>` closes with `<|end|>` /
+  # `<|return|>` / `<|call|>`) — richer than the pairs/singletons schema, so the
+  # colorizer keeps its dedicated harmony logic and the tokens are declared for the
+  # leak detector only.
+  harmony:
+    leak: ["<|start|>", "<|channel|>", "<|constrain|>", "<|message|>", "<|end|>", "<|return|>", "<|call|>"]
+  harmony_text:
+    leak: ["<|start|>", "<|channel|>", "<|constrain|>", "<|message|>", "<|end|>", "<|return|>", "<|call|>"]
