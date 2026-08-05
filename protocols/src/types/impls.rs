@@ -79,11 +79,29 @@ impl From<super::ChatCompletionRequestUserMessage> for ChatCompletionRequestMess
     }
 }
 
+impl From<super::ChatCompletionRequestSystemMessage> for ChatCompletionRequestMessage {
+    fn from(value: super::ChatCompletionRequestSystemMessage) -> Self {
+        Self::System(value)
+    }
+}
+
+impl From<super::ChatCompletionRequestDeveloperMessage> for ChatCompletionRequestMessage {
+    fn from(value: super::ChatCompletionRequestDeveloperMessage) -> Self {
+        Self::Developer(value)
+    }
+}
+
 impl From<async_openai::types::chat::ChatCompletionRequestSystemMessage>
     for ChatCompletionRequestMessage
 {
     fn from(value: async_openai::types::chat::ChatCompletionRequestSystemMessage) -> Self {
-        Self::System(value)
+        // Map upstream -> local (which adds the Kimi K3 dynamic-tool `tools`
+        // field); an upstream message never carries dynamic tools.
+        Self::System(super::ChatCompletionRequestSystemMessage {
+            content: value.content,
+            name: value.name,
+            tools: None,
+        })
     }
 }
 
@@ -91,7 +109,11 @@ impl From<async_openai::types::chat::ChatCompletionRequestDeveloperMessage>
     for ChatCompletionRequestMessage
 {
     fn from(value: async_openai::types::chat::ChatCompletionRequestDeveloperMessage) -> Self {
-        Self::Developer(value)
+        Self::Developer(super::ChatCompletionRequestDeveloperMessage {
+            content: value.content,
+            name: value.name,
+            tools: None,
+        })
     }
 }
 
