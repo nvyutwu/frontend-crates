@@ -97,6 +97,13 @@ pub struct BasicReasoningParser {
     /// reasoning block (e.g. Kimi-K2/K2.5 models sometimes emit
     /// `<|tool_calls_section_begin|>` without first closing `</think>`).
     tool_start_tokens: Vec<String>,
+    /// Set once a reasoning span has been opened and left in this stream.
+    /// Dangling-end recovery infers an *implicit opener* from a close marker,
+    /// which is only meaningful before any reasoning span has been seen. After
+    /// one has completed, a later close-shaped marker is protocol framing (Kimi
+    /// K3 emits `<|close|>argument<|sep|>`, `<|close|>call<|sep|>`, … in the
+    /// tool section) and must not pull normal text back into reasoning.
+    reasoning_span_completed: bool,
 }
 
 impl BasicReasoningParser {
@@ -116,6 +123,7 @@ impl BasicReasoningParser {
             recover_dangling_end: false,
             buffer_single_char_marker_prefix: false,
             tool_start_tokens: Vec::new(),
+            reasoning_span_completed: false,
         }
     }
 
@@ -360,6 +368,7 @@ impl ReasoningParser for BasicReasoningParser {
                     self._buffer.clear();
                     self._in_reasoning = false;
                     self.stripped_think_start = false;
+                    self.reasoning_span_completed = true;
                     break;
                 }
 
@@ -370,6 +379,7 @@ impl ReasoningParser for BasicReasoningParser {
                     self._buffer = current_text[after_end..].to_string();
                     self._in_reasoning = false;
                     self.stripped_think_start = false; // Allow detecting next <think> block
+                    self.reasoning_span_completed = true;
                     continue; // Process remainder — may contain further blocks
                 } else {
                     // No complete end token — check for partial at end of buffer
@@ -423,6 +433,10 @@ impl ReasoningParser for BasicReasoningParser {
                     // e.g. a prompt-prefilled `<mm:think>`); otherwise drop the
                     // marker and keep the surrounding text as normal so a stray
                     // `</think>` between two spans does not leak.
+                    // NOTE: intentionally NOT gated on `reasoning_span_completed` —
+                    // MiniMax M3 prefills a second `<mm:think>` span, so a *complete*
+                    // dangling close after one span is still an implicit opener.
+                    // Only the partial-prefix branch below needs the gate.
                     if self.recover_dangling_end {
                         accumulated_reasoning.push_str(&current_text[..end_pos]);
                     } else {
@@ -432,6 +446,7 @@ impl ReasoningParser for BasicReasoningParser {
                     self._buffer = current_text[after_end..].to_string();
                     self._in_reasoning = false;
                     self.stripped_think_start = false;
+                    self.reasoning_span_completed = true;
                     continue;
                 }
 
@@ -440,13 +455,30 @@ impl ReasoningParser for BasicReasoningParser {
                 // (both start with `<`), so check both and use the wider overlap.
                 // Require overlap >= 2 so a lone `<` passes through for tool call
                 // XML tags like `<invoke>` or `<minimax:tool_call>`.
+                //
+                // Partial prefixes of a tool_start_token must be buffered here too,
+                // exactly as the in-reasoning branch does. Without this, a marker
+                // straddling a chunk boundary is torn: its head is flushed to
+                // normal_text and its tail re-enters as ordinary text, corrupting
+                // the tool-call section and (with dangling-end recovery on)
+                // misrouting the tail into reasoning_text. Single-token deltas
+                // rarely expose it; multi-token deltas — speculative decoding
+                // emitting K accepted tokens per step — hit it constantly.
                 let ol_start = overlap(&current_text, &self.think_start_token);
                 let ol_end = overlap(&current_text, &self.think_end_token);
-                let ol = ol_start.max(ol_end);
+                let ol_tool = max_marker_overlap(&current_text, &self.tool_start_tokens);
+                let ol = ol_start.max(ol_end).max(ol_tool);
                 if ol >= 2 || (self.buffer_single_char_marker_prefix && ol == 1) {
                     let safe_end = current_text.len() - ol;
                     if safe_end > 0 {
-                        if self.recover_dangling_end && ol_end > ol_start {
+                        // Only the think-close prefix implies an implicit reasoning
+                        // span; a tool/structural marker prefix does not, and a tie
+                        // (`<|close|>` prefixes both) is not evidence either.
+                        if self.recover_dangling_end
+                            && !self.reasoning_span_completed
+                            && ol_end > ol_start
+                            && ol_end > ol_tool
+                        {
                             accumulated_reasoning.push_str(&current_text[..safe_end]);
                         } else {
                             accumulated_normal.push_str(&current_text[..safe_end]);

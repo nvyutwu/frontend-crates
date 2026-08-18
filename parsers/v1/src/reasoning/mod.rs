@@ -846,6 +846,49 @@ mod tests {
     }
 
     #[test]
+    /// Speculative decoding accepts K draft tokens per step, so the frontend sees
+    /// multi-token deltas instead of one token at a time. A K3 structural marker
+    /// then routinely straddles a delta boundary. Before the fix the "not in
+    /// reasoning" branch only buffered partial prefixes of the think markers, so a
+    /// split `<|close|>argument<|sep|>` was torn — head to normal_text, tail back
+    /// into reasoning_text — which corrupted the tool section and lost the call.
+    /// Sweep every fixed delta width; the split must never change the output.
+    #[test]
+    fn test_kimi_k3_multi_token_deltas_never_tear_a_structural_marker() {
+        let think = "Need the weather tool. Call it.";
+        let tools = "<|open|>tools<|sep|><|open|>call tool=\"get_weather\" index=\"1\"<|sep|>\
+<|open|>argument key=\"city\" type=\"string\"<|sep|>Paris<|close|>argument<|sep|>\
+<|close|>call<|sep|><|close|>tools<|sep|><|close|>message<|sep|><|end_of_msg|>";
+        let raw: String = format!("{think}<|close|>think<|sep|>{tools}");
+        let chars: Vec<char> = raw.chars().collect();
+
+        for width in 1..=32usize {
+            let mut parser = ReasoningParserType::get_reasoning_parser_from_name("kimi_k3");
+            parser.set_in_reasoning(true);
+
+            let (mut reasoning, mut normal) = (String::new(), String::new());
+            for piece in chars.chunks(width) {
+                let piece: String = piece.iter().collect();
+                let out = parser.parse_reasoning_streaming_incremental(&piece, &[]);
+                reasoning.push_str(&out.reasoning_text);
+                normal.push_str(&out.normal_text);
+            }
+            let out = parser.finish_reasoning_stream();
+            reasoning.push_str(&out.reasoning_text);
+            normal.push_str(&out.normal_text);
+
+            assert_eq!(
+                reasoning, think,
+                "delta width {width} leaked protocol framing into reasoning_content"
+            );
+            assert_eq!(
+                normal, tools,
+                "delta width {width} corrupted the XTML tool section"
+            );
+        }
+    }
+
+    #[test]
     fn test_kimi_k3_orphan_structural_closers_do_not_leak_into_reasoning() {
         let mut parser = ReasoningParserType::get_reasoning_parser_from_name("kimi_k3");
         parser.set_in_reasoning(true);
