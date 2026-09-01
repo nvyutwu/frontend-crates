@@ -229,13 +229,15 @@ pub(crate) fn build_kimi_k3(
         return Ok(None);
     }
 
-    // Moonshot's named-tool contract returns the selected call with no
-    // assistant content. Keeping the response channel itself is required by
-    // K3's XTML wire format, but leaving its body as `any_text` lets the model
-    // put a second, generic `<tool_call>...</tool_call>` representation there
-    // before emitting the structurally constrained XTML call. Restrict only
-    // named choice; auto/required may legitimately include response text.
-    let response_content = if matches!(ctx.tool_choice, crate::tool_calling::ToolChoice::Named(_)) {
+    // Named and required choices must reach the structurally constrained tools
+    // channel without first consuming an unrestricted assistant response. Keep
+    // the response channel itself for K3's XTML wire format, but make its body
+    // empty whenever a tool call is mandatory. Auto may still include response
+    // text before an optional tools channel.
+    let response_content = if matches!(
+        ctx.tool_choice,
+        crate::tool_calling::ToolChoice::Named(_) | crate::tool_calling::ToolChoice::Required
+    ) {
         Format::ConstString(ConstStringFormat {
             value: String::new(),
         })
@@ -369,25 +371,29 @@ mod tests {
     }
 
     #[test]
-    fn non_named_choices_keep_the_existing_response_body() {
+    fn auto_choice_keeps_the_existing_response_body() {
         let tools = tools();
+        let choice = ToolChoice::Auto;
+        let value =
+            serde_json::to_value(build_kimi_k3(&context(&choice, &tools)).unwrap().unwrap())
+                .unwrap();
+        let response_body = &value["format"]["elements"][1]["content"];
 
-        for choice in [ToolChoice::Auto, ToolChoice::Required] {
-            let value =
-                serde_json::to_value(build_kimi_k3(&context(&choice, &tools)).unwrap().unwrap())
-                    .unwrap();
-            let response_body = &value["format"]["elements"][1]["content"];
+        assert_eq!(response_body["type"], "any_text");
+        assert_eq!(response_body["excludes"], json!([]));
+    }
 
-            assert_eq!(
-                response_body["type"], "any_text",
-                "{choice:?} must retain response text"
-            );
-            assert_eq!(
-                response_body["excludes"],
-                json!([]),
-                "{choice:?} must retain the existing unrestricted response body"
-            );
-        }
+    #[test]
+    fn required_choice_requires_an_empty_response_body() {
+        let tools = tools();
+        let choice = ToolChoice::Required;
+        let value =
+            serde_json::to_value(build_kimi_k3(&context(&choice, &tools)).unwrap().unwrap())
+                .unwrap();
+        let response_body = &value["format"]["elements"][1]["content"];
+
+        assert_eq!(response_body["type"], "const_string");
+        assert_eq!(response_body["value"], "");
     }
 
     #[test]
