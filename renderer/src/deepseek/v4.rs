@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
 
 use super::common::{
-    NormalizeNonText, REASONING_EFFORT_HIGH, REASONING_EFFORT_MAX, RESPONSE_FORMAT_TEMPLATE,
-    TOOL_CALLS_BLOCK_NAME, TOOLS_TEMPLATE, drop_thinking_messages, encode_arguments_to_dsml,
-    find_last_user_index, merge_tool_messages, normalize_message_contents, render_tools,
-    sort_tool_results_by_call_order, task_token, to_json,
+    NormalizeNonText, REASONING_EFFORT_MAX, RESPONSE_FORMAT_TEMPLATE, TOOL_CALLS_BLOCK_NAME,
+    TOOLS_TEMPLATE, drop_thinking_messages, encode_arguments_to_dsml, find_last_user_index,
+    merge_tool_messages, normalize_message_contents, render_tools, sort_tool_results_by_call_order,
+    task_token, to_json,
 };
 pub use super::common::{ReasoningEffort, ThinkingMode, tokens};
 
@@ -36,14 +36,12 @@ fn render_message(
 
     let mut prompt = String::new();
 
-    // Reasoning effort prefix (only at index 0 in thinking mode). Low is the
-    // reference encoder's no-prefix baseline.
-    if index == 0 && thinking_mode == ThinkingMode::Thinking {
-        match reasoning_effort {
-            Some(ReasoningEffort::High) => prompt.push_str(REASONING_EFFORT_HIGH),
-            Some(ReasoningEffort::Max) => prompt.push_str(REASONING_EFFORT_MAX),
-            None => {}
-        }
+    // Reasoning effort prefix (only at index 0 in thinking mode with max effort).
+    if index == 0
+        && thinking_mode == ThinkingMode::Thinking
+        && reasoning_effort == Some(ReasoningEffort::Max)
+    {
+        prompt.push_str(REASONING_EFFORT_MAX);
     }
 
     match role {
@@ -277,7 +275,7 @@ pub fn encode_messages(
 /// * `thinking_mode` - Chat or Thinking
 /// * `add_bos_token` - Whether to prepend BOS token
 /// * `drop_thinking` - Drop reasoning_content from earlier turns (auto-disabled if tools present)
-/// * `reasoning_effort` - Optional reasoning effort level (High and Max prepend distinct verbatim blocks)
+/// * `reasoning_effort` - Optional reasoning effort level (Max prepends a verbatim block)
 pub fn encode_messages_with_options(
     messages: &[JsonValue],
     thinking_mode: ThinkingMode,
@@ -346,19 +344,26 @@ impl DeepSeekV4Formatter {
         Self::new(ThinkingMode::Chat)
     }
 
-    fn resolve_reasoning_effort(v: Option<&JsonValue>) -> (bool, Option<ReasoningEffort>) {
-        match v.and_then(JsonValue::as_str) {
-            Some("none") => (true, None),
-            Some("max") => (false, Some(ReasoningEffort::Max)),
-            Some("high") | Some("medium") | Some("xhigh") => (false, Some(ReasoningEffort::High)),
-            Some("low") | Some("minimal") => (false, None),
-            None if v.is_none() => (false, Some(ReasoningEffort::High)),
+    fn resolve_reasoning_effort(
+        args: Option<&std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Option<ReasoningEffort> {
+        let args = args?;
+        let v = args.get("reasoning_effort")?;
+        match v.as_str() {
+            Some("max") | Some("xhigh") => Some(ReasoningEffort::Max),
+            // DeepSeek V4 only natively distinguishes none/high/max, so the
+            // OpenAI-style intermediate levels map to "high" — the model still
+            // reasons, it just doesn't get the max-effort preamble.
+            Some("high") | Some("minimal") | Some("low") | Some("medium") => {
+                Some(ReasoningEffort::High)
+            }
+            Some("none") => None,
             _ => {
                 tracing::warn!(
                     value = ?v,
-                    "reasoning_effort must be one of \"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; ignoring and using API default (high)"
+                    "chat_template_args.reasoning_effort must be one of \"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"; ignoring and using default (none)"
                 );
-                (false, Some(ReasoningEffort::High))
+                None
             }
         }
     }
@@ -388,17 +393,8 @@ impl crate::OAIPromptFormatter for DeepSeekV4Formatter {
 
     fn render(&self, req: &dyn crate::OAIChatLikeRequest) -> Result<String> {
         let args = req.chat_template_args();
-        let effort_value = req
-            .reasoning_effort()
-            .map(|value| serde_json::to_value(value).context("serialize reasoning_effort"))
-            .transpose()?
-            .or_else(|| args.and_then(|args| args.get("reasoning_effort").cloned()));
-        let (disable_thinking, reasoning_effort) =
-            Self::resolve_reasoning_effort(effort_value.as_ref());
-        let mut thinking_mode = super::common::resolve_thinking_mode(args, self.thinking_mode);
-        if disable_thinking {
-            thinking_mode = ThinkingMode::Chat;
-        }
+        let thinking_mode = super::common::resolve_thinking_mode(args, self.thinking_mode);
+        let reasoning_effort = Self::resolve_reasoning_effort(args);
         let drop_thinking = Self::resolve_drop_thinking(args);
 
         let messages_value = req.messages();
@@ -450,21 +446,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reasoning_effort_prefixes() {
+    fn test_reasoning_effort_max_prefix() {
         let messages = json!([
             {"role": "system", "content": "hi"},
             {"role": "user", "content": "hello"}
         ]);
-
-        let high = encode_messages_with_options(
-            messages.as_array().unwrap(),
-            ThinkingMode::Thinking,
-            true,
-            true,
-            Some(ReasoningEffort::High),
-        )
-        .unwrap();
-        let max = encode_messages_with_options(
+        let out = encode_messages_with_options(
             messages.as_array().unwrap(),
             ThinkingMode::Thinking,
             true,
@@ -472,37 +459,21 @@ mod tests {
             Some(ReasoningEffort::Max),
         )
         .unwrap();
-        let low = encode_messages_with_options(
+        assert!(out.contains("Reasoning Effort: Absolute maximum"));
+        // Prefix comes between BOS and system content.
+        let after_bos = &out[tokens::BOS.len()..];
+        assert!(after_bos.starts_with("Reasoning Effort:"));
+
+        // High and None do not emit the prefix.
+        let out2 = encode_messages_with_options(
             messages.as_array().unwrap(),
             ThinkingMode::Thinking,
             true,
             true,
-            None,
+            Some(ReasoningEffort::High),
         )
         .unwrap();
-
-        assert_eq!(
-            high,
-            concat!(
-                "<｜begin▁of▁sentence｜>Reasoning Effort: Absolute maximum with no shortcuts permitted.\n",
-                "You MUST be very thorough in your thinking and comprehensively decompose the problem to resolve the root cause, rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios.\n",
-                "Explicitly write out your entire deliberation process, documenting every intermediate step, considered alternative, and rejected hypothesis to ensure absolutely no assumption is left unchecked.\n\n",
-                "hi<｜User｜>hello<｜Assistant｜><think>"
-            )
-        );
-        assert_eq!(
-            max,
-            concat!(
-                "<｜begin▁of▁sentence｜>Reasoning Effort: Beyond maximum — exhaustive, relentless, and uncompromising.\n",
-                "You MUST reason with the utmost depth and rigor, leaving absolutely nothing to chance: exhaustively decompose the problem into its most fundamental components, trace every causal chain to its root, and resolve the underlying cause rather than any surface symptom.\n",
-                "Do not stop reasoning until you have independently verified the solution from multiple angles and are certain that no assumption remains unchecked and no error remains undiscovered.\n\n",
-                "hi<｜User｜>hello<｜Assistant｜><think>"
-            )
-        );
-        assert_eq!(
-            low,
-            "<｜begin▁of▁sentence｜>hi<｜User｜>hello<｜Assistant｜><think>"
-        );
+        assert!(!out2.contains("Reasoning Effort: Absolute maximum"));
     }
 
     #[test]
@@ -623,11 +594,15 @@ mod tests {
             serde_json::Value::String("false".to_string()),
         );
         assert!(DeepSeekV4Formatter::resolve_drop_thinking(Some(&args)));
-        // Malformed reasoning_effort falls back to the API default (high).
-        let malformed = serde_json::Value::String("HIGH".to_string());
+        // Malformed reasoning_effort falls back to None.
+        let mut args2 = HashMap::new();
+        args2.insert(
+            "reasoning_effort".to_string(),
+            serde_json::Value::String("HIGH".to_string()),
+        );
         assert_eq!(
-            DeepSeekV4Formatter::resolve_reasoning_effort(Some(&malformed)),
-            (false, Some(ReasoningEffort::High))
+            DeepSeekV4Formatter::resolve_reasoning_effort(Some(&args2)),
+            None
         );
     }
 
@@ -653,7 +628,6 @@ mod tests {
     struct MockRequest {
         messages: JsonValue,
         chat_template_args: Option<std::collections::HashMap<String, JsonValue>>,
-        reasoning_effort: Option<JsonValue>,
         tools: Option<JsonValue>,
         tool_choice: Option<JsonValue>,
         response_format: Option<JsonValue>,
@@ -664,7 +638,6 @@ mod tests {
             Self {
                 messages,
                 chat_template_args: None,
-                reasoning_effort: None,
                 tools: None,
                 tool_choice: None,
                 response_format: None,
@@ -676,11 +649,6 @@ mod tests {
             args: std::collections::HashMap<String, JsonValue>,
         ) -> Self {
             self.chat_template_args = Some(args);
-            self
-        }
-
-        fn with_reasoning_effort(mut self, reasoning_effort: JsonValue) -> Self {
-            self.reasoning_effort = Some(reasoning_effort);
             self
         }
 
@@ -717,12 +685,6 @@ mod tests {
             &self,
         ) -> Option<&std::collections::HashMap<String, serde_json::Value>> {
             self.chat_template_args.as_ref()
-        }
-
-        fn reasoning_effort(&self) -> Option<minijinja::value::Value> {
-            self.reasoning_effort
-                .as_ref()
-                .map(minijinja::value::Value::from_serialize)
         }
 
         fn tools(&self) -> Option<minijinja::value::Value> {
@@ -825,23 +787,22 @@ mod tests {
 
     #[test]
     fn test_resolve_reasoning_effort_accepts_full_range() {
+        use std::collections::HashMap;
+
         let effort = |v: &str| {
-            let value = json!(v);
-            DeepSeekV4Formatter::resolve_reasoning_effort(Some(&value))
+            let mut args = HashMap::new();
+            args.insert("reasoning_effort".to_string(), json!(v));
+            DeepSeekV4Formatter::resolve_reasoning_effort(Some(&args))
         };
 
-        assert_eq!(effort("max"), (false, Some(ReasoningEffort::Max)));
-        assert_eq!(effort("xhigh"), (false, Some(ReasoningEffort::High)));
-        assert_eq!(effort("high"), (false, Some(ReasoningEffort::High)));
-        assert_eq!(effort("minimal"), (false, None));
-        assert_eq!(effort("low"), (false, None));
-        assert_eq!(effort("medium"), (false, Some(ReasoningEffort::High)));
-        assert_eq!(effort("none"), (true, None));
-        assert_eq!(effort("bogus"), (false, Some(ReasoningEffort::High)));
-        assert_eq!(
-            DeepSeekV4Formatter::resolve_reasoning_effort(None),
-            (false, Some(ReasoningEffort::High))
-        );
+        assert_eq!(effort("max"), Some(ReasoningEffort::Max));
+        assert_eq!(effort("xhigh"), Some(ReasoningEffort::Max));
+        assert_eq!(effort("high"), Some(ReasoningEffort::High));
+        assert_eq!(effort("minimal"), Some(ReasoningEffort::High));
+        assert_eq!(effort("low"), Some(ReasoningEffort::High));
+        assert_eq!(effort("medium"), Some(ReasoningEffort::High));
+        assert_eq!(effort("none"), None);
+        assert_eq!(effort("bogus"), None);
     }
 
     #[test]
@@ -868,90 +829,28 @@ mod tests {
     }
 
     #[test]
-    fn test_render_wires_reasoning_effort_from_chat_template_args() {
-        use crate::OAIPromptFormatter;
-        use std::collections::HashMap;
-
-        for (effort, expected) in [
-            ("high", REASONING_EFFORT_HIGH),
-            ("max", REASONING_EFFORT_MAX),
-        ] {
-            let mut args = HashMap::new();
-            args.insert("reasoning_effort".to_string(), json!(effort));
-
-            let req = MockRequest::new(json!([
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "hi"}
-            ]))
-            .with_chat_template_args(args);
-
-            let formatter = DeepSeekV4Formatter::new_thinking();
-            let out = formatter.render(&req).unwrap();
-
-            assert!(out.starts_with(tokens::BOS));
-            assert!(
-                out[tokens::BOS.len()..].starts_with(expected),
-                "{effort} preamble should appear after BOS, got:\n{out}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_render_wires_top_level_reasoning_effort_and_none_disables_thinking() {
-        use crate::OAIPromptFormatter;
-
-        let formatter = DeepSeekV4Formatter::new_thinking();
-        for (effort, expected_prefix) in [
-            ("high", "Reasoning Effort: Absolute maximum"),
-            ("max", "Reasoning Effort: Beyond maximum"),
-        ] {
-            let req: dynamo_protocols::types::CreateChatCompletionRequest =
-                serde_json::from_value(json!({
-                    "model": "deepseek-v4",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "reasoning_effort": effort
-                }))
-                .unwrap();
-            let out = formatter.render(&req).unwrap();
-
-            assert!(
-                out[tokens::BOS.len()..].starts_with(expected_prefix),
-                "top-level {effort} did not select its prefix: {out}"
-            );
-            assert!(out.ends_with(tokens::THINKING_START));
-        }
-
-        let req: dynamo_protocols::types::CreateChatCompletionRequest =
-            serde_json::from_value(json!({
-                "model": "deepseek-v4",
-                "messages": [{"role": "user", "content": "hi"}],
-                "reasoning_effort": "none"
-            }))
-            .unwrap();
-        let out = formatter.render(&req).unwrap();
-
-        assert_eq!(
-            out,
-            "<｜begin▁of▁sentence｜><｜User｜>hi<｜Assistant｜></think>"
-        );
-    }
-
-    #[test]
-    fn test_top_level_reasoning_effort_precedes_template_argument() {
+    fn test_render_wires_reasoning_effort_max_from_chat_template_args() {
         use crate::OAIPromptFormatter;
         use std::collections::HashMap;
 
         let mut args = HashMap::new();
         args.insert("reasoning_effort".to_string(), json!("max"));
-        let req = MockRequest::new(json!([{"role": "user", "content": "hi"}]))
-            .with_chat_template_args(args)
-            .with_reasoning_effort(json!("low"));
 
-        let out = DeepSeekV4Formatter::new_thinking().render(&req).unwrap();
+        let req = MockRequest::new(json!([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"}
+        ]))
+        .with_chat_template_args(args);
 
-        assert_eq!(
-            out,
-            "<｜begin▁of▁sentence｜><｜User｜>hi<｜Assistant｜><think>"
+        let formatter = DeepSeekV4Formatter::new_thinking();
+        let out = formatter.render(&req).unwrap();
+
+        assert!(out.starts_with(tokens::BOS));
+        let after_bos = &out[tokens::BOS.len()..];
+        assert!(
+            after_bos.starts_with("Reasoning Effort:"),
+            "REASONING_EFFORT_MAX preamble should appear at start (after BOS), got:\n{}",
+            out
         );
     }
 

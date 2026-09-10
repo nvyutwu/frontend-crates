@@ -69,6 +69,10 @@ impl KimiK3Formatter {
             && !tools
                 .as_ref()
                 .is_some_and(|tools| contains_tool(tools, named_tool))
+            && !messages.iter().any(|message| {
+                matches!(message.get("role").and_then(Value::as_str), Some("system" | "developer"))
+                    && message.get("tools").is_some_and(|tools| contains_tool(tools, named_tool))
+            })
         {
             return Err(PromptRenderError::invalid_request(format!(
                 "tool named {named_tool:?} in tool_choice is not present in tools"
@@ -1290,4 +1294,19 @@ mod tests {
             "<|close|>argument<|sep|>"
         )));
     }
+    #[test]
+    fn named_choice_accepts_in_place_dynamic_tool_without_global_declaration() {
+        let mut request = Request::new(serde_json::json!([
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "", "tools": [{
+                "type": "function", "function": {"name": "Calculator", "parameters": {"type": "object", "properties": {}}}
+            }]},
+            {"role": "user", "content": "compute"}
+        ]));
+        request.tool_choice = Some(serde_json::json!({"type": "function", "function": {"name": "Calculator"}}));
+        let rendered = fmt().render(&request).expect("named choice must resolve against dynamic tools");
+        assert_eq!(rendered.matches("The system dynamically extends the toolset").count(), 1);
+        assert!(request.tools.is_none(), "dynamic tools must not become global declarations");
+    }
+
 }

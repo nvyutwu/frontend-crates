@@ -38,6 +38,9 @@ let prompt: String = formatter.render(&request)?;
 - `dynamo-tokenizers` — tokenization (the *next* step after rendering); re-exported here for convenience.
 - `dynamo-parsers` — the *decode* side (parsing model output back into reasoning / tool calls).
 
-## Ownership
+## Provenance
 
-This crate is developed and published from frontend-crates. Dynamo consumes the published crate rather than carrying a source mirror.
+This crate is a one-way mirror of `lib/renderer` from
+[ai-dynamo/dynamo](https://github.com/ai-dynamo/dynamo). `src/` is synced
+verbatim; `Cargo.toml` and this README are inlined for standalone publishing.
+See the repo root `scripts/sync-from-dynamo.sh`.
