@@ -19,7 +19,7 @@ keywords = ["llm", "chat-template", "prompt", "jinja", "inference"]
 # internals; `dynamo-tokenizers` is re-exported only as a one-import convenience
 # for consumers that want tokenize + templating together.
 dynamo-protocols = { workspace = true }
-dynamo-tokenizers = { version = "1.8.1" }
+dynamo-tokenizers = { version = "1.8.0" }
 
 anyhow = { workspace = true }
 chrono = { workspace = true }
