@@ -85,7 +85,7 @@ impl From<async_openai::types::chat::ChatCompletionRequestSystemMessage>
     for ChatCompletionRequestMessage
 {
     fn from(value: async_openai::types::chat::ChatCompletionRequestSystemMessage) -> Self {
-        Self::System(value)
+        Self::System(super::ChatCompletionRequestSystemMessage { content: value.content, name: value.name, tools: None })
     }
 }
 
@@ -93,7 +93,7 @@ impl From<async_openai::types::chat::ChatCompletionRequestDeveloperMessage>
     for ChatCompletionRequestMessage
 {
     fn from(value: async_openai::types::chat::ChatCompletionRequestDeveloperMessage) -> Self {
-        Self::Developer(value)
+        Self::Developer(super::ChatCompletionRequestDeveloperMessage { content: value.content, name: value.name, tools: None })
     }
 }
 
@@ -273,5 +273,17 @@ impl From<String> for AudioUrl {
             url: value.parse().expect("Invalid URL"),
             uuid: None,
         }
+    }
+}
+
+impl From<super::ChatCompletionRequestSystemMessage> for ChatCompletionRequestMessage {
+    fn from(value: super::ChatCompletionRequestSystemMessage) -> Self {
+        Self::System(value)
+    }
+}
+
+impl From<super::ChatCompletionRequestDeveloperMessage> for ChatCompletionRequestMessage {
+    fn from(value: super::ChatCompletionRequestDeveloperMessage) -> Self {
+        Self::Developer(value)
     }
 }
