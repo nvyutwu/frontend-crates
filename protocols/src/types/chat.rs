@@ -752,10 +752,6 @@ pub struct ChatCompletionRequestAssistantMessage {
     pub function_call: Option<FunctionCall>,
 }
 
-/// Chat completion request message enum.
-///
-/// Redefined to use our extended `ChatCompletionRequestAssistantMessage`
-/// (with reasoning_content) and `ChatCompletionRequestUserMessage`
 /// System message with Kimi K3 dynamic-tool support.
 ///
 /// Extends upstream `ChatCompletionRequestSystemMessage` with:
@@ -801,6 +797,10 @@ pub struct ChatCompletionRequestDeveloperMessage {
     pub tools: Option<Vec<ChatCompletionTool>>,
 }
 
+/// Chat completion request message enum.
+///
+/// Redefined to use our extended `ChatCompletionRequestAssistantMessage`
+/// (with reasoning_content) and `ChatCompletionRequestUserMessage`
 /// (which references our extended content parts with video/audio).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "role")]
